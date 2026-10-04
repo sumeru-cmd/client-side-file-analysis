@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExifShield | Browser Forensic Tool</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-12 font-sans">
+
+    <div class="max-w-3xl mx-auto space-y-6">
+        <header class="text-center border-b border-slate-800 pb-6">
+            <h1 class="text-4xl font-black text-teal-400 tracking-tight">ExifShield Forensic Analyzer</h1>
+            <p class="text-slate-400 mt-2 text-sm">100% Client-Side Local Threat Intel & Image Metadata Stripper</p>
+        </header>
+
+        <div class="border-2 border-dashed border-slate-700 rounded-xl p-8 text-center bg-slate-900 hover:border-teal-500 transition cursor-pointer relative">
+            <input type="file" id="filePicker" onchange="processFile()" class="absolute inset-0 opacity-0 cursor-pointer">
+            <div class="space-y-2">
+                <p class="text-lg font-semibold text-slate-300">Select, click or drop a file here</p>
+                <p class="text-xs text-slate-500">Supports (.jpg, .jpeg, .pdf) for deep analysis</p>
+            </div>
+        </div>
+
+        <div id="dashboard" class="hidden space-y-4">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 shadow-xl">
+                <h2 class="text-xl font-bold text-slate-200 border-b border-slate-800 pb-2">Forensic Assessment Dashboard</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono bg-slate-950 p-4 rounded border border-slate-800">
+                    <div><span class="text-slate-500">File Name:</span> <span id="fileName" class="text-slate-300"></span></div>
+                    <div><span class="text-slate-500">Declared Type:</span> <span id="fileType" class="text-slate-300"></span></div>
+                    <div><span class="text-slate-500">Detected Magic Bytes:</span> <span id="magicBytes" class="text-teal-400 font-bold"></span></div>
+                    <div><span class="text-slate-500">Spoofing Status:</span> <span id="spoofStatus" class="font-bold"></span></div>
+                </div>
+
+                <div class="space-y-2">
+                    <h3 class="text-xs font-semibold uppercase text-slate-400 tracking-wider">Heuristic / Threat Scan Output</h3>
+                    <div id="scanLog" class="p-4 rounded bg-slate-950 border border-slate-800 font-mono text-sm max-h-40 overflow-y-auto space-y-1">
+                    </div>
+                </div>
+
+                <div id="actionPanel" class="hidden pt-2 border-t border-slate-800 flex justify-between items-center">
+                    <p class="text-xs text-slate-400">Removes APP1/Exif markers natively without losing image details.</p>
+                    <button onclick="sanitizeImage()" class="bg-teal-600 hover:bg-teal-500 text-slate-950 font-bold text-sm px-4 py-2 rounded transition shadow-lg">
+                        Sanitize & Download Clean File
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentFileBytes = null;
+        let currentFileName = "";
+
+        function processFile() {
+            const file = document.getElementById('filePicker').files[0];
+            if (!file) return;
+
+            currentFileName = file.name;
+            document.getElementById('fileName').innerText = file.name;
+            document.getElementById('fileType').innerText = file.type || "Unknown";
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const buffer = e.target.result;
+                currentFileBytes = new Uint8Array(buffer);
+                
+                let hexBytes = [];
+                for (let i = 0; i < Math.min(currentFileBytes.length, 4); i++) {
+                    hexBytes.push(currentFileBytes[i].toString(16).toUpperCase().padStart(2, '0'));
+                }
+                const magicString = hexBytes.join(" ");
+                document.getElementById('magicBytes').innerText = magicString;
+
+                document.getElementById('dashboard').classList.remove('hidden');
+                document.getElementById('actionPanel').classList.add('hidden');
+                const log = document.getElementById('scanLog');
+                log.innerHTML = "";
+
+                evaluateSpoofing(file.name, magicString, log);
+                
+                if (magicString.startsWith("25 50 44 46")) {
+                    scanPDFContent(currentFileBytes, log);
+                } else if (magicString.startsWith("FF D8 FF")) {
+                    scanJPEGContent(currentFileBytes, log);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function evaluateSpoofing(name, magic, logElement) {
+            const lowerName = name.toLowerCase();
+            const status = document.getElementById('spoofStatus');
+            
+            if (lowerName.endsWith('.pdf') && magic !== "25 50 44 46") {
+                status.innerText = "❌ SPOOFING DETECTED";
+                status.className = "text-rose-500 font-bold";
+                logElement.innerHTML += `<p class="text-rose-400">⚠️ CRITICAL: File masquerading as PDF but lacks raw PDF structure headers!</p>`;
+            } else if ((lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) && !magic.startsWith("FF D8 FF")) {
+                status.innerText = "❌ SPOOFING DETECTED";
+                status.className = "text-rose-500 font-bold";
+                logElement.innerHTML += `<p class="text-rose-400">⚠️ CRITICAL: File masquerading as JPEG image but header structures fail signature check!</p>`;
+            } else {
+                status.innerText = "🔒 MATCHED / VERIFIED";
+                status.className = "text-emerald-400 font-bold";
+                logElement.innerHTML += `<p class="text-emerald-500">✅ File extension aligns properly with physical architecture signatures.</p>`;
+            }
+        }
+
+        function scanPDFContent(bytes, logElement) {
+            logElement.innerHTML += `<p class="text-blue-400">ℹ️ Initiating heuristic structure pass for embedded scripting strings...</p>`;
+            
+            const decoder = new TextDecoder('utf-8');
+            const textContent = decoder.decode(bytes.slice(0, 500000));
+            
+            const signatures = [
+                { marker: '/JavaScript', risk: 'HIGH', desc: 'Embedded scripting element automated behavior' },
+                { marker: '/OpenAction', risk: 'HIGH', desc: 'Triggers commands instantly on user file opens' },
+                { marker: '/AA', risk: 'MEDIUM', desc: 'Additional automated execution handles' }
+            ];
+
+            let safe = true;
+            signatures.forEach(sig => {
+                if (textContent.includes(sig.marker)) {
+                    safe = false;
+                    logElement.innerHTML += `<p class="text-amber-400">🚨 RISK DETECTED: Found string tag "${sig.marker}" (${sig.desc}) [Severity: ${sig.risk}]</p>`;
+                }
+            });
+
+            if (safe) logElement.innerHTML += `<p class="text-emerald-400">✅ Dynamic scan complete: No automated active-code anchors observed.</p>`;
+        }
+
+        function scanJPEGContent(bytes, logElement) {
+            let hasExif = false;
+            for (let i = 0; i < bytes.length - 1; i++) {
+                if (bytes[i] === 0xFF && bytes[i+1] === 0xE1) {
+                    hasExif = true;
+                    break;
+                }
+            }
+
+            if (hasExif) {
+                logElement.innerHTML += `<p class="text-amber-400">📸 EXIF Metadata Segment Found: Image contains device metrics, software timestamps, or GPS coordinate tables.</p>`;
+                document.getElementById('actionPanel').classList.remove('hidden');
+            } else {
+                logElement.innerHTML += `<p class="text-emerald-400">✅ No metadata blocks or location tables found in image.</p>`;
+            }
+        }
+
+        function sanitizeImage() {
+            if (!currentFileBytes) return;
+            
+            let cleanChunks = [];
+            let i = 0;
+            
+            while (i < currentFileBytes.length) {
+                if (currentFileBytes[i] === 0xFF && currentFileBytes[i+1] === 0xE1) {
+                    let length = (currentFileBytes[i+2] << 8) + currentFileBytes[i+3];
+                    i += (length + 2);
+                    continue;
+                }
+                cleanChunks.push(currentFileBytes[i]);
+                i++;
+            }
+
+            const sanitizedArray = new Uint8Array(cleanChunks);
+            const blob = new Blob([sanitizedArray], { type: "image/jpeg" });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `sanitized_${currentFileName.replace(/\.[^/.]+$/, "")}.jpg`;
+            link.click();
+        }
+    </script>
+</body>
+</html>
